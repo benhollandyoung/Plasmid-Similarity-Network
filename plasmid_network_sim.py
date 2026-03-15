@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
+from sklearn.cluster import DBSCAN
+from sklearn.metrics import adjusted_rand_score
 
 
 # ============================================================
@@ -230,9 +232,43 @@ def plot_matrix(mat, title, cmap="viridis"):
     plt.tight_layout()
 
 
-def draw_graph(G, title, families=None, seed=42, node_size=90):
+def draw_graph(
+    G,
+    title,
+    families=None,
+    group_labels=None,
+    seed=42,
+    node_size=90,
+    group_strength=2.0,
+):
+    """Draw a directed graph and optionally group nodes by cluster labels.
+
+    When `group_labels` is provided, we add temporary "attraction" edges between nodes
+    in the same group before computing the spring layout. This makes nodes in the same
+    group tend to be placed closer together.
+    """
+
     plt.figure(figsize=(10, 10))
-    pos = nx.spring_layout(G, seed=seed, k=0.45 / np.sqrt(max(1, G.number_of_nodes())))
+
+    # Compute layout: optionally augment graph with group edges to pull clusters together
+    if group_labels is None:
+        pos = nx.spring_layout(G, seed=seed, k=0.45 / np.sqrt(max(1, G.number_of_nodes())))
+    else:
+        # Create a copy so we don't modify the original graph
+        G_pos = G.copy()
+        for lbl in set(group_labels):
+            if lbl is None or lbl == -1:
+                continue
+            members = [i for i, c in enumerate(group_labels) if c == lbl]
+            for u in members:
+                for v in members:
+                    if u >= v:
+                        continue
+                    # Add a tiny attractive edge to pull group members together
+                    w = G_pos[u][v]["weight"] if G_pos.has_edge(u, v) else 0.0
+                    G_pos.add_edge(u, v, weight=w + group_strength)
+                    G_pos.add_edge(v, u, weight=w + group_strength)
+        pos = nx.spring_layout(G_pos, seed=seed, k=0.45 / np.sqrt(max(1, G.number_of_nodes())))
 
     if families is None:
         node_colors = None
@@ -275,6 +311,7 @@ def main():
         n_families=8,
         seed=123,
     )
+    gamma = 2
 
     d1, d2 = generate_structured_distances(plasmids, seed=456)
 
@@ -286,9 +323,9 @@ def main():
     d_comb_exp = combined_distance(F_exp, d2)
     d_comb_rank = combined_distance(F_rank, d2)
 
-    p_minmax = distance_to_probability(d_comb_minmax, gamma=1.2)
-    p_exp = distance_to_probability(d_comb_exp, gamma=1.2)
-    p_rank = distance_to_probability(d_comb_rank, gamma=1.2)
+    p_minmax = distance_to_probability(d_comb_minmax, gamma=gamma)
+    p_exp = distance_to_probability(d_comb_exp, gamma=gamma)
+    p_rank = distance_to_probability(d_comb_rank, gamma=gamma)
 
     G_minmax = sample_directed_graph(p_minmax, seed=11)
     G_exp = sample_directed_graph(p_exp, seed=22)
@@ -309,15 +346,35 @@ def main():
         G_exp,
         "Directed graph using exponential DCJ normalization",
         families=plasmids["families"],
+        group_labels=plasmids["families"],
         seed=1,
     )
     draw_graph(
         G_rank,
         "Directed graph using rank/CDF-like DCJ normalization",
         families=plasmids["families"],
+        group_labels=plasmids["families"],
         seed=2,
     )
     plt.savefig("figures/example_network_exp.png", dpi=200, bbox_inches="tight")
+
+    # Clustering comparison using DBSCAN on combined distance - THIS USES AN ARBITARY THRESHOLD - NOT GOOD
+    clusters = DBSCAN(eps=0.3, min_samples=5, metric='precomputed').fit_predict(d_comb_exp)
+    n_clusters = len(set(clusters)) - (1 if -1 in clusters else 0)
+    n_noise = list(clusters).count(-1)
+    ari = adjusted_rand_score(plasmids["families"], clusters)
+
+    print(f"DBSCAN estimated clusters: {n_clusters}")
+    print(f"Noise points: {n_noise}")
+    print(f"Adjusted Rand Index vs true families: {ari:.3f}")
+
+    draw_graph(
+        G_exp,
+        f"Directed graph colored by DBSCAN clusters (ARI={ari:.3f})",
+        families=clusters,
+        group_labels=clusters,
+        seed=3,
+    )
 
     plt.show()
 
